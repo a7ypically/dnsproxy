@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
+	"golang.org/x/net/proxy"
 	"time"
 
 	proxynetutil "github.com/AdguardTeam/dnsproxy/internal/netutil"
@@ -30,6 +31,16 @@ func ResolveDialContext(
 	preferIPv6 bool,
 ) (h DialHandler, err error) {
 	defer func() { err = errors.Annotate(err, "dialing %q: %w", u.Host) }()
+
+	if u.Scheme == "socks+https" {
+		ctx := context.Background()
+		if timeout > 0 {
+			var cancel func()
+			ctx, cancel = context.WithTimeout(ctx, timeout)
+			defer cancel()
+		}
+		return NewSocksDialContext(timeout, u), nil
+	}
 
 	host, port, err := netutil.SplitHostPort(u.Host)
 	if err != nil {
@@ -106,6 +117,68 @@ func NewDialContext(timeout time.Duration, addrs ...string) (h DialHandler) {
 			log.Debug("bootstrap: connection to %s failed in %s: %s", addr, elapsed, err)
 			errs = append(errs, err)
 		}
+
+		// TODO(e.burkov):  Use errors.Join in Go 1.20.
+		return nil, errors.List("all dialers failed", errs...)
+	}
+}
+
+func NewSocksDialContext(timeout time.Duration, u *url.URL) (h DialHandler) {
+	dialer_direct := &net.Dialer{
+		Timeout: timeout,
+	}
+
+	log.Debug("NewSocksDialContext socks server: %s", u.Host)
+
+	dialSocksProxy, err := proxy.SOCKS5("tcp", u.Host, nil, dialer_direct)
+	if err != nil {
+		return func(_ context.Context, _, _ string) (conn net.Conn, err error) {
+			return nil, errors.Error("Error creating socks dialer")
+		}
+	}
+
+	var dialer proxy.ContextDialer
+
+	if contextDialer, ok := dialSocksProxy.(proxy.ContextDialer); ok {
+		dialer = contextDialer
+	} else {
+		return func(_ context.Context, _, _ string) (conn net.Conn, err error) {
+			return nil, errors.Error("Failed type assertion to DialContext")
+		}
+	}
+
+	// TODO(e.burkov):  Check IPv6 preference here.
+
+	u, err = url.Parse("https://" + u.Path[1:])
+	if err != nil {
+		return func(_ context.Context, _, _ string) (conn net.Conn, err error) {
+			return nil, err
+		}
+	}
+
+	_, _, err = net.SplitHostPort(u.Host)
+	if err != nil {
+		u.Host = netutil.JoinHostPort(u.Host, 443)
+	}
+
+	return func(ctx context.Context, network, _ string) (conn net.Conn, err error) {
+		var errs []error
+
+		// Return first succeeded connection.  Note that we're using addrs
+		// instead of what's passed to the function.
+
+		start := time.Now()
+		conn, err = dialer.DialContext(ctx, network, u.Host)
+		//conn, err = dialer.Dial(network, addr)
+		elapsed := time.Since(start)
+		if err == nil {
+			log.Debug("socks bootstrap: connection to %s succeeded in %s", u, elapsed)
+
+			return conn, nil
+		}
+
+		log.Debug("socks bootstrap: connection to %s failed in %s: %s", u, elapsed, err)
+		errs = append(errs, err)
 
 		// TODO(e.burkov):  Use errors.Join in Go 1.20.
 		return nil, errors.List("all dialers failed", errs...)

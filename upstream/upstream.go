@@ -223,7 +223,7 @@ func urlToUpstream(uu *url.URL, opts *Options) (u Upstream, err error) {
 		return newDoQ(uu, opts)
 	case "tls":
 		return newDoT(uu, opts)
-	case "h3", "https":
+	case "h3", "https", "socks+https":
 		return newDoH(uu, opts)
 	default:
 		return nil, fmt.Errorf("unsupported url scheme: %s", sch)
@@ -328,27 +328,31 @@ func newDialerInitializer(
 	u *url.URL,
 	opts *Options,
 ) (di DialerInitializer, closeBoot closeFunc, err error) {
+
 	host, port, err := netutil.SplitHostPort(u.Host)
 	if err != nil {
 		return nil, nopClose, fmt.Errorf("invalid address: %s: %w", u.Host, err)
 	}
 
-	if addrsLen := len(opts.ServerIPAddrs); addrsLen > 0 {
-		// Don't resolve the addresses of the server since those from the
-		// options should be used.
-		addrs := make([]string, 0, addrsLen)
-		for _, addr := range opts.ServerIPAddrs {
-			addrs = append(addrs, netutil.JoinHostPort(addr.String(), port))
+	if u.Scheme != "socks+https" {
+		if addrsLen := len(opts.ServerIPAddrs); addrsLen > 0 {
+			// Don't resolve the addresses of the server since those from the
+			// options should be used.
+			addrs := make([]string, 0, addrsLen)
+			for _, addr := range opts.ServerIPAddrs {
+				addrs = append(addrs, netutil.JoinHostPort(addr.String(), port))
+			}
+
+			handler := bootstrap.NewDialContext(opts.Timeout, addrs...)
+
+			return func() (h bootstrap.DialHandler, err error) { return handler, nil }, nopClose, nil
+		} else if _, err = netip.ParseAddr(host); err == nil {
+			// Don't resolve the address of the server since it's already an IP.
+
+			handler := bootstrap.NewDialContext(opts.Timeout, u.Host)
+
+			return func() (h bootstrap.DialHandler, err error) { return handler, nil }, nopClose, nil
 		}
-
-		handler := bootstrap.NewDialContext(opts.Timeout, addrs...)
-
-		return func() (h bootstrap.DialHandler, err error) { return handler, nil }, nopClose, nil
-	} else if _, err = netip.ParseAddr(host); err == nil {
-		// Don't resolve the address of the server since it's already an IP.
-		handler := bootstrap.NewDialContext(opts.Timeout, u.Host)
-
-		return func() (h bootstrap.DialHandler, err error) { return handler, nil }, nopClose, nil
 	}
 
 	resolvers, closeBoot, err := newResolvers(opts)

@@ -99,6 +99,14 @@ func newDoH(addr *url.URL, opts *Options) (u Upstream, err error) {
 		return nil, err
 	}
 
+	if addr.Scheme == "socks+https" {
+		addr, err = url.Parse("https://" + addr.Path[1:])
+		if err != nil {
+			return nil, err
+		}
+		addPort(addr, defaultPortDoH)
+	}
+
 	ups := &dnsOverHTTPS{
 		getDialer: getDialer,
 		closeBoot: closeBoot,
