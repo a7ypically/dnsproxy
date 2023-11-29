@@ -83,6 +83,7 @@ type dnsOverHTTPS struct {
 
 // newDoH returns the DNS-over-HTTPS Upstream.
 func newDoH(addr *url.URL, opts *Options) (u Upstream, err error) {
+	orig_addr := addr
 	addPort(addr, defaultPortDoH)
 
 	var httpVersions []HTTPVersion
@@ -133,7 +134,7 @@ func newDoH(addr *url.URL, opts *Options) (u Upstream, err error) {
 			VerifyConnection:      opts.VerifyConnection,
 		},
 		clientMu:     &sync.Mutex{},
-		addrRedacted: addr.Redacted(),
+		addrRedacted: orig_addr.Redacted(),
 		timeout:      opts.Timeout,
 	}
 	for _, v := range httpVersions {
